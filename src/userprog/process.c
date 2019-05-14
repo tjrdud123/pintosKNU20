@@ -55,12 +55,14 @@ start_process (void *file_name_)
   bool success;
   char *temp;
   int argc;
-  char *argv[30];
+  char **argv;
   char *next_str;  
   int i;
-  char *address[30];
+  char **address;
   char **temp2;
 
+  argv = (char**)malloc(20*sizeof(char *));
+  address = (char **)malloc(20*sizeof(char *));
   temp = strtok_r(file_name, " ", &next_str);
 
   for(i = 0; temp; i++)
@@ -95,9 +97,13 @@ start_process (void *file_name_)
     for(i = argc - 1; i >= 0; i--)
     {
       if_.esp -= (strlen(argv[i]) + 1);
-      address[i] = &if_.esp;
+     // strlcpy(address[i], &if_.esp, 4);
+      //temp2 = if_.esp;
+      address[i] = if_.esp;
       memcpy(if_.esp, argv[i], (strlen(argv[i]) + 1));
     }
+//    for(i=0; i<argc; i++)
+//      printf("%s", address[i]);
 
     if_.esp -= word_align;
     memset(if_.esp, 0, word_align);
@@ -118,13 +124,12 @@ start_process (void *file_name_)
     for(i = argc - 1; i >= 0; i--)
     {
       if_.esp -= sizeof(char *);
-      memcpy(if_.esp, address[i], sizeof(char*));
+      *(uint32_t *)if_.esp = address[i];
+  //    memcpy(if_.esp, address[i], sizeof(char*));
     }
 
-    temp2 = &if_.esp;
     if_.esp -= sizeof(char **);
-    memcpy(if_.esp, temp2, sizeof(char **));
-    
+    *(uint32_t *)if_.esp = if_.esp + 4; 
     if_.esp -= 4;
     *(uint32_t *)if_.esp = argc;
 
@@ -161,7 +166,7 @@ process_wait (tid_t child_tid UNUSED)
 {
 //  return -1;
   while(true)
-    thread_yield();
+   thread_yield();
 }
 
 /* Free the current process's resources. */
@@ -413,6 +418,14 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
   /* The segment must not be empty. */
   if (phdr->p_memsz == 0)
     return false;
+
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  if(!is_user_vaddr((void *)phdr->p_vaddr))
+    return false;
+  if(!is_user_vaddr((void *)(phdr->p_vaddr + phdr->p_memsz)))
+    return false;
+  /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
   
   /* The virtual memory region must both start and end within the
   if (phdr->p_vaddr + phdr->p_memsz < phdr->p_vaddr)
