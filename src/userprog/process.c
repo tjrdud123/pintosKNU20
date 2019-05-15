@@ -21,6 +21,75 @@
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
+void filename_to_command(char *fn, char *cmd) {
+  int i;
+  strlcpy(cmd, fn, strlen(fn) + 1);
+  for (i=0; cmd[i]!='\0' && cmd[i] != ' '; i++);
+  cmd[i] = '\0';
+}
+
+void esp_setup(char *file_name, void **esp) {
+
+  char ** argv;
+  int argc;
+  int total_len;
+  char stored_file_name[512];
+  char *token;
+  char *last;
+  int i;
+  int len;
+  
+  strlcpy(stored_file_name, file_name, strlen(file_name) + 1);
+  token = strtok_r(stored_file_name, " ", &last);
+  argc = 0;
+  /* calculate argc */
+  while (token != NULL) {
+    argc += 1;
+    token = strtok_r(NULL, " ", &last);
+  }
+  argv = (char **)malloc(sizeof(char *) * argc);
+  /* store argv */
+  strlcpy(stored_file_name, file_name, strlen(file_name) + 1);
+  for (i = 0, token = strtok_r(stored_file_name, " ", &last); i < argc; i++, token = strtok_r(NULL, " ", &last)) {
+    len = strlen(token);
+    argv[i] = token;
+    //printf("[argv(%d)]%s\n",i,argv[i]);
+  }
+
+  /* push argv[argc-1] ~ argv[0] */
+  total_len = 0;
+  for (i = argc - 1; 0 <= i; i --) {
+    len = strlen(argv[i]);
+    *esp -= len + 1;
+    total_len += len + 1;
+    strlcpy(*esp, argv[i], len + 1);
+    argv[i] = *esp;
+  }
+  /* push word align */
+  *esp -= total_len % 4 != 0 ? 4 - (total_len % 4) : 0;
+  /* push NULL */
+  *esp -= 4;
+  **(uint32_t **)esp = 0;
+  /* push address of argv[argc-1] ~ argv[0] */
+  for (i = argc - 1; 0 <= i; i--) {
+    *esp -= 4;
+    **(uint32_t **)esp = argv[i];
+  }
+  /* push address of argv */
+  *esp -= 4;
+  **(uint32_t **)esp = *esp + 4;
+
+  /* push argc */
+  *esp -= 4;
+  **(uint32_t **)esp = argc;
+  
+  /* push return address */
+  *esp -= 4;
+  **(uint32_t **)esp = 0;
+
+  //hex_dump(*esp, *esp, 100, 1);
+  free(argv);
+}
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -30,6 +99,7 @@ process_execute (const char *file_name)
 {
   char *fn_copy;
   tid_t tid;
+  char command[512];
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
@@ -38,108 +108,37 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  filename_to_command(file_name, command);
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (command, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
 }
 
-/* A thread function that loads a user process and starts it
-   running. */
+
 static void
 start_process (void *file_name_)
 {
   char *file_name = file_name_;
   struct intr_frame if_;
   bool success;
-  char *temp;
-  int argc;
-  char **argv;
-  char *next_str;  
-  int i;
-  char **address;
-  char **temp2;
-
-  argv = (char**)malloc(20*sizeof(char *));
-  address = (char **)malloc(20*sizeof(char *));
-  temp = strtok_r(file_name, " ", &next_str);
-
-  for(i = 0; temp; i++)
-  {
-    argv[i] = temp;
-    temp = strtok_r(NULL, " ", &next_str);
-  }
-  argc = i;  
-
-//  printf("\n\n\n\n\n");
-//  printf("%d\n", argc);
-//  printf("\n\n\n\n\n");
-
+  char command[512];
+  filename_to_command(file_name, command);
+  /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (argv[0], &if_.eip, &if_.esp);
-  
-  int total_size = 0;
-  int word_align;
-  for(i=0; i<argc; i++)
-    total_size += (strlen(argv[i]) + 1);
-
-  if(total_size % 4 == 0)
-    word_align = 0;
-  else
-    word_align = 4 - (total_size % 4);
-  
-  if(success)
-  {
-    for(i = argc - 1; i >= 0; i--)
-    {
-      if_.esp -= (strlen(argv[i]) + 1);
-     // strlcpy(address[i], &if_.esp, 4);
-      //temp2 = if_.esp;
-      address[i] = if_.esp;
-      memcpy(if_.esp, argv[i], (strlen(argv[i]) + 1));
-    }
-//    for(i=0; i<argc; i++)
-//      printf("%s", address[i]);
-
-    if_.esp -= word_align;
-    memset(if_.esp, 0, word_align);
-
-    if_.esp -= 4;
-    memset(if_.esp, 0, 4);
-
-//    temp = if_.esp;
-//    temp += 4;
-//    temp += word_align;
-  
-//    for(i=0; i<argc; i++)
-//    {
-//      address[i] = temp;
-//      temp = strlen(argv[i] + 1);
-//    }
-    
-    for(i = argc - 1; i >= 0; i--)
-    {
-      if_.esp -= sizeof(char *);
-      *(uint32_t *)if_.esp = address[i];
-  //    memcpy(if_.esp, address[i], sizeof(char*));
-    }
-
-    if_.esp -= sizeof(char **);
-    *(uint32_t *)if_.esp = if_.esp + 4; 
-    if_.esp -= 4;
-    *(uint32_t *)if_.esp = argc;
-
-    if_.esp -= 4;
-    memset(if_.esp, 0, 4); 
+  success = load(command, &if_.eip, &if_.esp);
+	//printf("[command] %s\n",cmd_name);
+	//printf("[success] %d\n",success);
+  if (success) {
+    esp_setup(file_name, &if_.esp);
   }
-  hex_dump(if_.esp, if_.esp, 100, 1);
   /* If load failed, quit. */
   palloc_free_page (file_name);
-  if (!success) 
+  if (!success)
     thread_exit ();
 
   /* Start the user process by simulating a return from an
@@ -151,7 +150,6 @@ start_process (void *file_name_)
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
-
 /* Waits for thread TID to die and returns its exit status.  If
    it was terminated by the kernel (i.e. killed due to an
    exception), returns -1.  If TID is invalid or if it was not a
@@ -164,11 +162,12 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-//  return -1;
-  while(true)
-   thread_yield();
+  int i;
+  for(i = 0; i < 1000; i++) {
+    thread_yield();
+  }
+  return -1;
 }
-
 /* Free the current process's resources. */
 void
 process_exit (void)
@@ -418,14 +417,6 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
   /* The segment must not be empty. */
   if (phdr->p_memsz == 0)
     return false;
-
-  //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  if(!is_user_vaddr((void *)phdr->p_vaddr))
-    return false;
-  if(!is_user_vaddr((void *)(phdr->p_vaddr + phdr->p_memsz)))
-    return false;
-  /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
   
   /* The virtual memory region must both start and end within the
   if (phdr->p_vaddr + phdr->p_memsz < phdr->p_vaddr)
